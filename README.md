@@ -84,6 +84,14 @@ tend-desktop
 
 The `tend` command starts the FastAPI server, MCP server and notifications and opens the UI in your browser. `tend-desktop` uses a native WebView window and system tray on Windows; on Linux/macOS it falls back to browser launch.
 
+To run `tend-desktop` persistently without a console window on Windows:
+
+```powershell
+Start-Process -WindowStyle Hidden powershell -ArgumentList "-Command","tend-desktop"
+```
+
+Create a desktop shortcut with the same target or use `powershell -WindowStyle Hidden -Command "tend-desktop"` to launch on startup.
+
 ## First-time setup
 
 Open **Settings → AI connection**. Enter your provider's HTTPS API base URL, model name, and API key, then save and test the connection. The model must support OpenAI-compatible chat-completions tool calling. Your key is stored in your operating system's credential vault, not the Tend database.
