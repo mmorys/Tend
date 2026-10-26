@@ -3,6 +3,7 @@ import os
 import sys
 from mcp.server.fastmcp import FastMCP
 from . import store as db
+from . import gitlab_config, gitlab_secrets, gitlab_sync
 mcp=FastMCP("tether-chat",host="127.0.0.1",port=int(os.environ.get("TEND_MCP_PORT","8766")))
 @mcp.tool()
 def get_snapshot(start:str,end:str,category:str="")->dict:
@@ -156,6 +157,95 @@ def restore_task(thread_id:str)->dict:
 def list_archived_tasks(query:str="")->list[dict]:
     """Search archived task records."""
     return db.archived_threads(query)
+
+@mcp.tool()
+def gitlab_list_assigned_issues(state:str="opened")->list[dict]:
+    """List GitLab issues assigned to the authenticated user. Requires GitLab connection configured in Settings. state can be opened, closed, all."""
+    token = gitlab_secrets.get()
+    if not token:
+        return {"error":"GitLab token not configured"}
+    url_base = gitlab_config.get_url()
+    try:
+        user = gitlab_sync._fetch_user(token, url_base)
+        user_id = user.get("id")
+    except Exception as e:
+        return {"error": f"GitLab user fetch failed: {e}"}
+    try:
+        issues = gitlab_sync._paginate("/issues", token, url_base, {"assignee_id": user_id, "state": state, "per_page": 100})
+    except Exception as e:
+        return {"error": f"GitLab issues fetch failed: {e}"}
+    # Normalize
+    out = []
+    for i in issues:
+        out.append({
+            "iid": i.get("iid"),
+            "title": i.get("title"),
+            "project_path": i.get("project_path_with_namespace"),
+            "state": i.get("state"),
+            "web_url": i.get("web_url"),
+            "created_at": i.get("created_at"),
+            "updated_at": i.get("updated_at")
+        })
+    return out
+
+@mcp.tool()
+def gitlab_list_assigned_mrs(state:str="opened")->list[dict]:
+    """List GitLab merge requests where the authenticated user is a reviewer. Requires GitLab connection configured."""
+    token = gitlab_secrets.get()
+    if not token:
+        return {"error":"GitLab token not configured"}
+    url_base = gitlab_config.get_url()
+    try:
+        user = gitlab_sync._fetch_user(token, url_base)
+        user_id = user.get("id")
+    except Exception as e:
+        return {"error": f"GitLab user fetch failed: {e}"}
+    # Need projects where user is member
+    try:
+        projects = gitlab_sync._fetch_projects(token, url_base, user_id)
+    except Exception as e:
+        return {"error": f"Projects fetch failed: {e}"}
+    mrs = []
+    for p in projects:
+        try:
+            proj_mrs = gitlab_sync._fetch_mrs_for_project(token, url_base, p.get("id"), user_id)
+        except Exception:
+            continue
+        for mr in proj_mrs:
+            mrs.append({
+                "iid": mr.get("iid"),
+                "title": mr.get("title"),
+                "project_path": mr.get("project_path"),
+                "state": mr.get("state"),
+                "web_url": mr.get("web_url"),
+                "created_at": mr.get("created_at"),
+                "updated_at": mr.get("updated_at")
+            })
+    return mrs
+
+@mcp.tool()
+def gitlab_create_task_from_issue(project_path:str,iid:int)->dict:
+    """Create a tether-chat task from a GitLab issue. Requires GitLab connection configured."""
+    token = gitlab_secrets.get()
+    if not token:
+        return {"error":"GitLab token not configured"}
+    url_base = gitlab_config.get_url()
+    try:
+        # Fetch issue via API
+        issue = gitlab_sync._request(f"/projects/{project_path.replace('/', '%2F')}/issues/{iid}", token, url_base)
+    except Exception as e:
+        return {"error": f"GitLab issue fetch failed: {e}"}
+    title = f"GitLab Issue !{issue.get('iid')} in {issue.get('project_path_with_namespace')}"
+    summary = issue.get("description") or ""
+    categories = ["GitLab"]
+    thread = db.create(title, summary, categories)
+    # Store action config
+    # Note: db.create returns dict with id
+    # Add note with link
+    if thread and thread.get("id"):
+        db.add(thread["id"], "update", f"Linked to {issue.get('web_url')}")
+    return {"task_id": thread.get("id") if thread else None, "title": title, "web_url": issue.get("web_url")}
+
 if __name__=="__main__":
     db.init()
     mcp.run(transport="streamable-http" if "--http" in sys.argv else "stdio")

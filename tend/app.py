@@ -13,10 +13,12 @@ from . import commands
 from . import storage
 from .rendering import render
 from .ai import reflect
+from . import gitlab_secrets, gitlab_config, gitlab_sync
 
 app=FastAPI(title="tether-chat")
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]"])
 db.init()
+gitlab_sync.start()
 class Ask(BaseModel):
     question:str=Field(min_length=1,max_length=1000)
 class Thread(BaseModel):
@@ -178,6 +180,31 @@ def settings():return ai.public_config()
 def settings_save(data:Provider):
     try:return ai.save(data.base_url,data.model,data.api_key,data.clear_key)
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
+
+class GitLabSettings(BaseModel):
+    url:str|None=None
+    token:str|None=None
+    clear_token:bool=False
+
+@app.get("/api/gitlab/settings")
+def gitlab_settings():
+    return {"url": gitlab_config.get_url(), "has_token": bool(gitlab_secrets.get())}
+
+@app.post("/api/gitlab/settings")
+def gitlab_settings_save(data:GitLabSettings):
+    if data.url:
+        gitlab_config.set_url(data.url)
+    if data.clear_token:
+        try:
+            gitlab_secrets.delete_token()
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from None
+    elif data.token:
+        try:
+            gitlab_secrets.set_token(data.token)
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from None
+    return {"url": gitlab_config.get_url(), "has_token": bool(gitlab_secrets.get())}
 
 @app.get("/api/conversation")
 def history():return db.conversation()
