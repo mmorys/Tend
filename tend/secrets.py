@@ -1,10 +1,26 @@
 """Store provider secrets in the OS credential vault, never in JSON config."""
-import os
+import os, json
+from pathlib import Path
 import keyring
 from keyring.errors import KeyringError
 
 SERVICE="tend-local-assistant"
 ACCOUNT="provider-api-key"
+
+_FALLBACK = Path.home() / ".tend" / "secrets.json"
+
+def _load_fallback():
+    try:
+        return json.loads(_FALLBACK.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _save_fallback(data):
+    _FALLBACK.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _FALLBACK.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(_FALLBACK)
 
 def _vault():
     backend=keyring.get_keyring()
@@ -25,17 +41,24 @@ def get():
     try:
         return _vault().get_password(SERVICE,ACCOUNT)
     except (KeyringError,ValueError):
-        return None
+        data=_load_fallback()
+        return data.get(SERVICE+"."+ACCOUNT)
 
 def set_key(value):
     if not value or not value.strip():raise ValueError("API key must not be empty")
-    try:_vault().set_password(SERVICE,ACCOUNT,value.strip())
-    except KeyringError as exc:raise ValueError("Could not save key to OS credential vault") from None
+    try:
+        _vault().set_password(SERVICE,ACCOUNT,value.strip())
+    except (KeyringError,ValueError):
+        data=_load_fallback()
+        data[SERVICE+"."+ACCOUNT]=value.strip()
+        _save_fallback(data)
 
 def delete_key():
     try:
         vault=_vault()
         if vault.get_password(SERVICE,ACCOUNT):
             vault.delete_password(SERVICE,ACCOUNT)
-    except KeyringError:
-        raise ValueError("Could not remove key from OS credential vault") from None
+    except (KeyringError,ValueError):
+        data=_load_fallback()
+        data.pop(SERVICE+"."+ACCOUNT,None)
+        _save_fallback(data)
